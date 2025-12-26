@@ -1,0 +1,19 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: casdoor-route
+  namespace: default
+spec:
+  hostnames:
+    - casdoor.cloudwithme.dev
+  parentRefs:
+    - name: myapp-gateway
+      namespace: default
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: casdoor
+          port: 8000

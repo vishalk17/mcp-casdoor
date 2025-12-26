@@ -1,0 +1,70 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-config
+  namespace: default
+data:
+  OAUTH_ISSUER: "https://casdoor.cloudwithme.dev"
+  OAUTH_AUTHORIZATION_ENDPOINT: "https://casdoor.cloudwithme.dev/login/oauth/authorize"
+  OAUTH_TOKEN_ENDPOINT: "https://casdoor.cloudwithme.dev/api/login/oauth/access_token"
+  OAUTH_JWKS_URI: "https://casdoor.cloudwithme.dev/.well-known/jwks"
+  OAUTH_SCOPES: "openid profile email"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: store-mcp-server
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: store-mcp-server
+  template:
+    metadata:
+      labels:
+        app: store-mcp-server
+    spec:
+      containers:
+        - name: store-mcp-server
+          image: ghcr.io/vishalk17/store-mcp-server:0.001
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: mcp-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: store-mcp-server
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: store-mcp-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: store-mcp-server-public
+  namespace: default
+spec:
+  parentRefs:
+    - name: myapp-gateway
+      namespace: default
+  hostnames:
+    - vishalk17.cloudwithme.dev
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: store-mcp-server
+          port: 80

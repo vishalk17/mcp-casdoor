@@ -27,7 +27,7 @@ spec:
     spec:
       containers:
         - name: store-mcp-server
-          image: ghcr.io/vishalk17/store-mcp-server:0.001
+          image: ghcr.io/vishalk17/store-mcp-server:0.002
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080

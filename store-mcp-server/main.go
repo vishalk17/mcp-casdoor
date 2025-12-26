@@ -4,10 +4,22 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 )
 
-// JSON-RPC 2.0 structures (matching the mcp-service pattern)
+/* -------------------- helpers -------------------- */
+
+func getenv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+/* -------------------- JSON-RPC types -------------------- */
+
 type JSONRPCRequest struct {
 	JsonRPC string          `json:"jsonrpc"`
 	ID      interface{}     `json:"id,omitempty"`
@@ -28,11 +40,12 @@ type RPCError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
-// MCP Protocol structures
+/* -------------------- MCP protocol types -------------------- */
+
 type InitializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    ClientCapabilities     `json:"capabilities"`
-	ClientInfo      ClientInfo             `json:"clientInfo"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ClientInfo      ClientInfo         `json:"clientInfo"`
 }
 
 type ClientCapabilities struct {
@@ -52,8 +65,7 @@ type InitializeResult struct {
 }
 
 type ServerCapabilities struct {
-	Tools        *ToolsCapability       `json:"tools,omitempty"`
-	Experimental map[string]interface{} `json:"experimental,omitempty"`
+	Tools *ToolsCapability `json:"tools,omitempty"`
 }
 
 type ToolsCapability struct {
@@ -72,15 +84,7 @@ type Tool struct {
 }
 
 type InputSchema struct {
-	Type       string              `json:"type"`
-	Properties map[string]Property `json:"properties,omitempty"`
-	Required   []string            `json:"required,omitempty"`
-}
-
-type Property struct {
-	Type        string   `json:"type"`
-	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
+	Type string `json:"type"`
 }
 
 type ToolsListResult struct {
@@ -94,13 +98,14 @@ type CallToolParams struct {
 
 type CallToolResult struct {
 	Content []Content `json:"content"`
-	IsError bool      `json:"isError,omitempty"`
 }
 
 type Content struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
+
+/* -------------------- MCP server -------------------- */
 
 type MCPServer struct {
 	initialized bool
@@ -111,203 +116,142 @@ func NewMCPServer() *MCPServer {
 	return &MCPServer{}
 }
 
-func (s *MCPServer) handleRequest(req JSONRPCRequest) JSONRPCResponse {
-	log.Printf("Received request: method=%s id=%v", req.Method, req.ID)
+func (s *MCPServer) sendError(id interface{}, code int, msg string) JSONRPCResponse {
+	return JSONRPCResponse{
+		JsonRPC: "2.0",
+		ID:      id,
+		Error: &RPCError{
+			Code:    code,
+			Message: msg,
+		},
+	}
+}
 
+func (s *MCPServer) handleRequest(req JSONRPCRequest) JSONRPCResponse {
 	switch req.Method {
+
 	case "initialize":
-		return s.handleInitialize(req.ID, req.Params)
-	case "notifications/initialized":
-		log.Println("Client initialized notification received")
-		return JSONRPCResponse{} // No response for notifications
+		s.mu.Lock()
+		s.initialized = true
+		s.mu.Unlock()
+
+		return JSONRPCResponse{
+			JsonRPC: "2.0",
+			ID:      req.ID,
+			Result: InitializeResult{
+				ProtocolVersion: "2024-11-05",
+				Capabilities: ServerCapabilities{
+					Tools: &ToolsCapability{ListChanged: false},
+				},
+				ServerInfo: ServerInfo{
+					Name:    "store-mcp-server",
+					Version: "0.002",
+				},
+			},
+		}
+
 	case "tools/list":
-		s.mu.RLock()
-		initialized := s.initialized
-		s.mu.RUnlock()
-		if !initialized {
-			return s.sendError(req.ID, -32002, "Server not initialized", nil)
+		return JSONRPCResponse{
+			JsonRPC: "2.0",
+			ID:      req.ID,
+			Result: ToolsListResult{
+				Tools: []Tool{
+					{
+						Name:        "list_indian_stores",
+						Description: "List popular Indian online stores",
+						InputSchema: InputSchema{Type: "object"},
+					},
+				},
+			},
 		}
-		return s.handleToolsList(req.ID)
+
 	case "tools/call":
-		s.mu.RLock()
-		initialized := s.initialized
-		s.mu.RUnlock()
-		if !initialized {
-			return s.sendError(req.ID, -32002, "Server not initialized", nil)
+		return JSONRPCResponse{
+			JsonRPC: "2.0",
+			ID:      req.ID,
+			Result: CallToolResult{
+				Content: []Content{
+					{
+						Type: "text",
+						Text: "Flipkart, Amazon India, Reliance Digital, Myntra, Snapdeal, Tata CLiQ",
+					},
+				},
+			},
 		}
-		return s.handleCallTool(req.ID, req.Params)
+
 	case "ping":
 		return JSONRPCResponse{
 			JsonRPC: "2.0",
 			ID:      req.ID,
 			Result:  map[string]string{},
 		}
+
 	default:
-		return s.sendError(req.ID, -32601, "Method not found", req.Method)
+		return s.sendError(req.ID, -32601, "Method not found")
 	}
 }
 
-func (s *MCPServer) sendError(id interface{}, code int, message string, data interface{}) JSONRPCResponse {
-	return JSONRPCResponse{
-		JsonRPC: "2.0",
-		ID:      id,
-		Error: &RPCError{
-			Code:    code,
-			Message: message,
-			Data:    data,
+/* -------------------- HTTP handlers -------------------- */
+
+func rootHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Write([]byte("hey there 👋 this is store-mcp-server"))
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func oauthMetadataHandler(w http.ResponseWriter, _ *http.Request) {
+	meta := map[string]interface{}{
+		"issuer":                 getenv("OAUTH_ISSUER", ""),
+		"authorization_endpoint": getenv("OAUTH_AUTHORIZATION_ENDPOINT", ""),
+		"token_endpoint":         getenv("OAUTH_TOKEN_ENDPOINT", ""),
+		"jwks_uri":               getenv("OAUTH_JWKS_URI", ""),
+		"response_types_supported": []string{
+			"code",
 		},
-	}
-}
-
-func (s *MCPServer) handleInitialize(id interface{}, params json.RawMessage) JSONRPCResponse {
-	var initParams InitializeParams
-	if err := json.Unmarshal(params, &initParams); err != nil {
-		return s.sendError(id, -32602, "Invalid params", err.Error())
-	}
-
-	log.Printf("Initialize request from client: %s %s", initParams.ClientInfo.Name, initParams.ClientInfo.Version)
-
-	result := InitializeResult{
-		ProtocolVersion: "2024-11-05",  // Match the mcp-service version
-		Capabilities: ServerCapabilities{
-			Tools: &ToolsCapability{
-				ListChanged: false, // No dynamic tool list changes
-			},
+		"grant_types_supported": []string{
+			"authorization_code",
 		},
-		ServerInfo: ServerInfo{
-			Name:    "indian-store-mcp-server",
-			Version: "1.0.0",
-		},
+		"scopes_supported": strings.Split(
+			getenv("OAUTH_SCOPES", "openid profile email"),
+			" ",
+		),
 	}
 
-	s.mu.Lock()
-	s.initialized = true
-	s.mu.Unlock()
-
-	return JSONRPCResponse{
-		JsonRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	}
-}
-
-func (s *MCPServer) handleToolsList(id interface{}) JSONRPCResponse {
-	tools := []Tool{
-		{
-			Name:        "list_indian_stores",
-			Description: "List popular Indian online stores with their services",
-			InputSchema: InputSchema{
-				Type:       "object",
-				Properties: map[string]Property{},
-			},
-		},
-	}
-
-	result := ToolsListResult{Tools: tools}
-
-	return JSONRPCResponse{
-		JsonRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	}
-}
-
-func (s *MCPServer) handleCallTool(id interface{}, params json.RawMessage) JSONRPCResponse {
-	var callParams CallToolParams
-	if err := json.Unmarshal(params, &callParams); err != nil {
-		return s.sendError(id, -32602, "Invalid params", err.Error())
-	}
-
-	log.Printf("Tool call: %s with args: %v", callParams.Name, callParams.Arguments)
-
-	switch callParams.Name {
-	case "list_indian_stores":
-		return JSONRPCResponse{
-			JsonRPC: "2.0",
-			ID:      id,
-			Result: CallToolResult{
-				Content: []Content{
-					{
-						Type: "text",
-						Text: "1. Flipkart - E-commerce platform offering electronics, fashion, home essentials\n2. Amazon India - Global e-commerce platform with wide product range\n3. Reliance Digital - Electronics and appliances retailer\n4. Myntra - Fashion and lifestyle e-commerce platform\n5. Snapdeal - E-commerce platform with various product categories\n6. Tata CLiQ - Digital commerce platform by Tata Group",
-					},
-				},
-			},
-		}
-	default:
-		return s.sendError(id, -32601, "Unknown tool", callParams.Name)
-	}
-}
-
-// HTTP handler for MCP requests
-func (s *MCPServer) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
-	// Set appropriate headers for MCP communication
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	json.NewEncoder(w).Encode(meta)
+}
 
-	// Handle preflight requests
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
+func (s *MCPServer) mcpHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req JSONRPCRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		log.Printf("Invalid JSON-RPC request: %v", err)
-
-		// Send back a parse error response
-		errorResponse := JSONRPCResponse{
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(JSONRPCResponse{
 			JsonRPC: "2.0",
-			ID:      nil, // Parse errors typically have ID as null
-			Error: &RPCError{
-				Code:    -32700, // Parse error
-				Message: "Parse error: Invalid JSON",
-			},
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(errorResponse)
+			Error:   &RPCError{Code: -32700, Message: "Parse error"},
+		})
 		return
 	}
 
-	// Process the request
-	response := s.handleRequest(req)
-
-	// Send response
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(s.handleRequest(req))
 }
 
-func healthCheck(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "ok",
-		"server": "indian-store-mcp-server",
-	})
-}
+/* -------------------- main -------------------- */
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	log.Println("store-mcp-server starting on :8080")
 
-	// Create MCP server
 	server := NewMCPServer()
 
-	// Setup HTTP handlers
-	http.HandleFunc("/mcp", server.handleMCPRequest)
-	http.HandleFunc("/health", healthCheck)
+	http.HandleFunc("/", rootHandler)
+	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/.well-known/oauth-authorization-server", oauthMetadataHandler)
+	http.HandleFunc("/mcp", server.mcpHandler)
 
-	// Start server
-	port := "8080"
-	log.Printf("Indian Store MCP Server starting on port %s", port)
-	log.Printf("Endpoint: /mcp")
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }

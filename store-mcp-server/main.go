@@ -7,7 +7,12 @@ import (
 	"sync"
 )
 
-// JSON-RPC 2.0 structures (matching the mcp-service pattern)
+//
+// --------------------
+// JSON-RPC structures
+// --------------------
+//
+
 type JSONRPCRequest struct {
 	JsonRPC string          `json:"jsonrpc"`
 	ID      interface{}     `json:"id,omitempty"`
@@ -28,11 +33,16 @@ type RPCError struct {
 	Data    interface{} `json:"data,omitempty"`
 }
 
-// MCP Protocol structures
+//
+// --------------------
+// MCP protocol structs
+// --------------------
+//
+
 type InitializeParams struct {
-	ProtocolVersion string                 `json:"protocolVersion"`
-	Capabilities    ClientCapabilities     `json:"capabilities"`
-	ClientInfo      ClientInfo             `json:"clientInfo"`
+	ProtocolVersion string             `json:"protocolVersion"`
+	Capabilities    ClientCapabilities `json:"capabilities"`
+	ClientInfo      ClientInfo         `json:"clientInfo"`
 }
 
 type ClientCapabilities struct {
@@ -52,8 +62,7 @@ type InitializeResult struct {
 }
 
 type ServerCapabilities struct {
-	Tools        *ToolsCapability       `json:"tools,omitempty"`
-	Experimental map[string]interface{} `json:"experimental,omitempty"`
+	Tools *ToolsCapability `json:"tools,omitempty"`
 }
 
 type ToolsCapability struct {
@@ -74,13 +83,11 @@ type Tool struct {
 type InputSchema struct {
 	Type       string              `json:"type"`
 	Properties map[string]Property `json:"properties,omitempty"`
-	Required   []string            `json:"required,omitempty"`
 }
 
 type Property struct {
 	Type        string   `json:"type"`
 	Description string   `json:"description,omitempty"`
-	Enum        []string `json:"enum,omitempty"`
 }
 
 type ToolsListResult struct {
@@ -102,6 +109,12 @@ type Content struct {
 	Text string `json:"text"`
 }
 
+//
+// --------------------
+// MCP server
+// --------------------
+//
+
 type MCPServer struct {
 	initialized bool
 	mu          sync.RWMutex
@@ -109,42 +122,6 @@ type MCPServer struct {
 
 func NewMCPServer() *MCPServer {
 	return &MCPServer{}
-}
-
-func (s *MCPServer) handleRequest(req JSONRPCRequest) JSONRPCResponse {
-	log.Printf("Received request: method=%s id=%v", req.Method, req.ID)
-
-	switch req.Method {
-	case "initialize":
-		return s.handleInitialize(req.ID, req.Params)
-	case "notifications/initialized":
-		log.Println("Client initialized notification received")
-		return JSONRPCResponse{} // No response for notifications
-	case "tools/list":
-		s.mu.RLock()
-		initialized := s.initialized
-		s.mu.RUnlock()
-		if !initialized {
-			return s.sendError(req.ID, -32002, "Server not initialized", nil)
-		}
-		return s.handleToolsList(req.ID)
-	case "tools/call":
-		s.mu.RLock()
-		initialized := s.initialized
-		s.mu.RUnlock()
-		if !initialized {
-			return s.sendError(req.ID, -32002, "Server not initialized", nil)
-		}
-		return s.handleCallTool(req.ID, req.Params)
-	case "ping":
-		return JSONRPCResponse{
-			JsonRPC: "2.0",
-			ID:      req.ID,
-			Result:  map[string]string{},
-		}
-	default:
-		return s.sendError(req.ID, -32601, "Method not found", req.Method)
-	}
 }
 
 func (s *MCPServer) sendError(id interface{}, code int, message string, data interface{}) JSONRPCResponse {
@@ -159,25 +136,49 @@ func (s *MCPServer) sendError(id interface{}, code int, message string, data int
 	}
 }
 
+func (s *MCPServer) handleRequest(req JSONRPCRequest) JSONRPCResponse {
+	switch req.Method {
+
+	case "initialize":
+		return s.handleInitialize(req.ID, req.Params)
+
+	case "notifications/initialized":
+		return JSONRPCResponse{}
+
+	case "tools/list":
+		if !s.isInitialized() {
+			return s.sendError(req.ID, -32002, "Server not initialized", nil)
+		}
+		return s.handleToolsList(req.ID)
+
+	case "tools/call":
+		if !s.isInitialized() {
+			return s.sendError(req.ID, -32002, "Server not initialized", nil)
+		}
+		return s.handleCallTool(req.ID, req.Params)
+
+	case "ping":
+		return JSONRPCResponse{
+			JsonRPC: "2.0",
+			ID:      req.ID,
+			Result:  map[string]string{},
+		}
+
+	default:
+		return s.sendError(req.ID, -32601, "Method not found", req.Method)
+	}
+}
+
+func (s *MCPServer) isInitialized() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.initialized
+}
+
 func (s *MCPServer) handleInitialize(id interface{}, params json.RawMessage) JSONRPCResponse {
 	var initParams InitializeParams
 	if err := json.Unmarshal(params, &initParams); err != nil {
 		return s.sendError(id, -32602, "Invalid params", err.Error())
-	}
-
-	log.Printf("Initialize request from client: %s %s", initParams.ClientInfo.Name, initParams.ClientInfo.Version)
-
-	result := InitializeResult{
-		ProtocolVersion: "2024-11-05",  // Match the mcp-service version
-		Capabilities: ServerCapabilities{
-			Tools: &ToolsCapability{
-				ListChanged: false, // No dynamic tool list changes
-			},
-		},
-		ServerInfo: ServerInfo{
-			Name:    "indian-store-mcp-server",
-			Version: "1.0.0",
-		},
 	}
 
 	s.mu.Lock()
@@ -187,127 +188,133 @@ func (s *MCPServer) handleInitialize(id interface{}, params json.RawMessage) JSO
 	return JSONRPCResponse{
 		JsonRPC: "2.0",
 		ID:      id,
-		Result:  result,
+		Result: InitializeResult{
+			ProtocolVersion: "2024-11-05",
+			Capabilities: ServerCapabilities{
+				Tools: &ToolsCapability{ListChanged: false},
+			},
+			ServerInfo: ServerInfo{
+				Name:    "indian-store-mcp-server",
+				Version: "1.0.0",
+			},
+		},
 	}
 }
 
 func (s *MCPServer) handleToolsList(id interface{}) JSONRPCResponse {
-	tools := []Tool{
-		{
-			Name:        "list_indian_stores",
-			Description: "List popular Indian online stores with their services",
-			InputSchema: InputSchema{
-				Type:       "object",
-				Properties: map[string]Property{},
-			},
-		},
-	}
-
-	result := ToolsListResult{Tools: tools}
-
 	return JSONRPCResponse{
 		JsonRPC: "2.0",
 		ID:      id,
-		Result:  result,
+		Result: ToolsListResult{
+			Tools: []Tool{
+				{
+					Name:        "list_indian_stores",
+					Description: "List popular Indian online stores",
+					InputSchema: InputSchema{Type: "object"},
+				},
+			},
+		},
 	}
 }
 
 func (s *MCPServer) handleCallTool(id interface{}, params json.RawMessage) JSONRPCResponse {
-	var callParams CallToolParams
-	if err := json.Unmarshal(params, &callParams); err != nil {
-		return s.sendError(id, -32602, "Invalid params", err.Error())
-	}
-
-	log.Printf("Tool call: %s with args: %v", callParams.Name, callParams.Arguments)
-
-	switch callParams.Name {
-	case "list_indian_stores":
-		return JSONRPCResponse{
-			JsonRPC: "2.0",
-			ID:      id,
-			Result: CallToolResult{
-				Content: []Content{
-					{
-						Type: "text",
-						Text: "1. Flipkart - E-commerce platform offering electronics, fashion, home essentials\n2. Amazon India - Global e-commerce platform with wide product range\n3. Reliance Digital - Electronics and appliances retailer\n4. Myntra - Fashion and lifestyle e-commerce platform\n5. Snapdeal - E-commerce platform with various product categories\n6. Tata CLiQ - Digital commerce platform by Tata Group",
-					},
-				},
+	return JSONRPCResponse{
+		JsonRPC: "2.0",
+		ID:      id,
+		Result: CallToolResult{
+			Content: []Content{
+				{Type: "text", Text: "Flipkart, Amazon India, Reliance Digital, Myntra, Snapdeal, Tata CLiQ"},
 			},
-		}
-	default:
-		return s.sendError(id, -32601, "Unknown tool", callParams.Name)
+		},
 	}
 }
 
-// HTTP handler for MCP requests
+//
+// --------------------
+// HTTP handlers
+// --------------------
+//
+
 func (s *MCPServer) handleMCPRequest(w http.ResponseWriter, r *http.Request) {
-	// Set appropriate headers for MCP communication
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 
-	// Handle preflight requests
-	if r.Method == "OPTIONS" {
+	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST method is allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "Only POST allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
 	var req JSONRPCRequest
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil {
-		log.Printf("Invalid JSON-RPC request: %v", err)
-
-		// Send back a parse error response
-		errorResponse := JSONRPCResponse{
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(JSONRPCResponse{
 			JsonRPC: "2.0",
-			ID:      nil, // Parse errors typically have ID as null
-			Error: &RPCError{
-				Code:    -32700, // Parse error
-				Message: "Parse error: Invalid JSON",
-			},
-		}
-
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(errorResponse)
+			Error:   &RPCError{Code: -32700, Message: "Parse error"},
+		})
 		return
 	}
 
-	// Process the request
-	response := s.handleRequest(req)
-
-	// Send response
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(s.handleRequest(req))
 }
 
-func healthCheck(w http.ResponseWriter, r *http.Request) {
+func healthCheck(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{
-		"status": "ok",
-		"server": "indian-store-mcp-server",
-	})
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
+
+//
+// --------------------
+// OAuth discovery (Casdoor)
+// --------------------
+//
+
+func oauthAuthorizationServerHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	casdoorBase := "https://casdoor.cloudwithme.dev"
+
+	metadata := map[string]interface{}{
+		"issuer":                                casdoorBase,
+		"authorization_endpoint":                casdoorBase + "/login/oauth/authorize",
+		"token_endpoint":                        casdoorBase + "/api/login/oauth/access_token",
+		"userinfo_endpoint":                     casdoorBase + "/api/userinfo",
+		"introspection_endpoint":                casdoorBase + "/api/introspect",
+		"jwks_uri":                              casdoorBase + "/.well-known/jwks.json",
+		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
+		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
+		"scopes_supported":                      []string{"openid", "profile", "email", "offline_access"},
+		"subject_types_supported":               []string{"public"},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(metadata)
+}
+
+//
+// --------------------
+// main
+// --------------------
+//
 
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-
-	// Create MCP server
 	server := NewMCPServer()
 
-	// Setup HTTP handlers
 	http.HandleFunc("/mcp", server.handleMCPRequest)
 	http.HandleFunc("/health", healthCheck)
 
-	// Start server
-	port := "8080"
-	log.Printf("Indian Store MCP Server starting on port %s", port)
-	log.Printf("Endpoint: /mcp")
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	// ✅ OAuth discovery pointing to CASDOOR
+	http.HandleFunc("/.well-known/oauth-authorization-server", oauthAuthorizationServerHandler)
+
+	log.Println("MCP server running on :8080")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }

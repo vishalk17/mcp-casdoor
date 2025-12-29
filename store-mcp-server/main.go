@@ -5,6 +5,8 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"strings"
+	"os"
 )
 
 //
@@ -280,20 +282,26 @@ func oauthAuthorizationServerHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	casdoorBase := "https://casdoor.cloudwithme.dev"
+	issuer := os.Getenv("OAUTH_ISSUER")
+	authz := os.Getenv("OAUTH_AUTHORIZATION_ENDPOINT")
+	token := os.Getenv("OAUTH_TOKEN_ENDPOINT")
+	jwks := os.Getenv("OAUTH_JWKS_URI")
+	scopes := os.Getenv("OAUTH_SCOPES")
+
+	if issuer == "" || authz == "" || token == "" || jwks == "" {
+		http.Error(w, "OIDC env vars not set", http.StatusInternalServerError)
+		return
+	}
 
 	metadata := map[string]interface{}{
-		"issuer":                                casdoorBase,
-		"authorization_endpoint":                casdoorBase + "/login/oauth/authorize",
-		"token_endpoint":                        casdoorBase + "/api/login/oauth/access_token",
-		"userinfo_endpoint":                     casdoorBase + "/api/userinfo",
-		"introspection_endpoint":                casdoorBase + "/api/introspect",
-		"jwks_uri":                              casdoorBase + "/.well-known/jwks.json",
-		"response_types_supported":              []string{"code"},
-		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
-		"token_endpoint_auth_methods_supported": []string{"client_secret_basic", "client_secret_post"},
-		"scopes_supported":                      []string{"openid", "profile", "email", "offline_access"},
-		"subject_types_supported":               []string{"public"},
+		"issuer":                 issuer,
+		"authorization_endpoint": authz,
+		"token_endpoint":         token,
+		"jwks_uri":               jwks,
+		"response_types_supported": []string{"code"},
+		"grant_types_supported":    []string{"authorization_code", "refresh_token"},
+		"scopes_supported":         strings.Split(scopes, " "),
+		"subject_types_supported":  []string{"public"},
 	}
 
 	w.Header().Set("Content-Type", "application/json")

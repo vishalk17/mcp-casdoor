@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-config-casdoor
+  namespace: default
+data:
+  OIDC_PROVIDER: "casdoor"
+
+  OAUTH_ISSUER: "https://casdoor.cloudwithme.dev"
+  OAUTH_AUTHORIZATION_ENDPOINT: "https://casdoor.cloudwithme.dev/login/oauth/authorize"
+  OAUTH_TOKEN_ENDPOINT: "https://casdoor.cloudwithme.dev/api/login/oauth/access_token"
+  OAUTH_JWKS_URI: "https://casdoor.cloudwithme.dev/.well-known/jwks.json"
+
+  OAUTH_SCOPES: "openid profile email offline_access"

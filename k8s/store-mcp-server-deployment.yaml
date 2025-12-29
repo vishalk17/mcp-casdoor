@@ -1,14 +1,14 @@
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mcp-config
-  namespace: default
-data:
-  OAUTH_ISSUER: "https://casdoor.cloudwithme.dev"
-  OAUTH_AUTHORIZATION_ENDPOINT: "https://casdoor.cloudwithme.dev/login/oauth/authorize"
-  OAUTH_TOKEN_ENDPOINT: "https://casdoor.cloudwithme.dev/api/login/oauth/access_token"
-  OAUTH_JWKS_URI: "https://casdoor.cloudwithme.dev/.well-known/jwks"
-  OAUTH_SCOPES: "openid profile email"
+# apiVersion: v1
+# kind: ConfigMap
+# metadata:
+#   name: mcp-config
+#   namespace: default
+# data:
+#   OAUTH_ISSUER: "https://casdoor.cloudwithme.dev"
+#   OAUTH_AUTHORIZATION_ENDPOINT: "https://casdoor.cloudwithme.dev/login/oauth/authorize"
+#   OAUTH_TOKEN_ENDPOINT: "https://casdoor.cloudwithme.dev/api/login/oauth/access_token"
+#   OAUTH_JWKS_URI: "https://casdoor.cloudwithme.dev/.well-known/jwks"
+#   OAUTH_SCOPES: "openid profile email"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,13 +27,13 @@ spec:
     spec:
       containers:
         - name: store-mcp-server
-          image: ghcr.io/vishalk17/store-mcp-server:0.005
+          image: ghcr.io/vishalk17/store-mcp-server:0.022
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
           envFrom:
             - configMapRef:
-                name: mcp-config
+                name: mcp-config-casdoor
 ---
 apiVersion: v1
 kind: Service
@@ -91,35 +91,4 @@ spec:
         - name: store-mcp-server
           port: 80
 ---
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
-metadata:
-  name: casdoor-oidc-mcp
-  namespace: default
-spec:
-  targetRef:
-    group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: store-mcp-server-public
 
-  oidc:
-    provider:
-      issuer: "https://casdoor.cloudwithme.dev"
-      authorizationEndpoint: "https://casdoor.cloudwithme.dev/login/oauth/authorize"
-      tokenEndpoint: "https://casdoor.cloudwithme.dev/api/login/oauth/access_token"
-
-    clientID: "55af642109d62315da60"
-
-    clientSecret:
-      name: "casdoor-oidc-client-secret"
-
-    scopes:
-      - openid
-      - profile
-      - email
-
-    redirectURL: "https://vishalk17.cloudwithme.dev/store-mcp-server-public/oauth2/callback"
-    logoutPath: "/store-mcp-server-public/logout"
-
-    forwardAccessToken: true
-    refreshToken: true
